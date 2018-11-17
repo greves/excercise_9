@@ -1,0 +1,184 @@
+---
+title: "Excercise 9"
+author: "Sarah Greve"
+date: "11/13/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+*Repeat the differential gene expression analysis*
+
+```{r, warning= FALSE, message=FALSE}
+#repeat the analysis
+library(pasilla)
+library(edgeR)
+library(DEXSeq)
+setwd("/Users/greves/Desktop/Sarah")
+samples <- read.table("samples.txt", header=TRUE,
+                      row.names=5, stringsAsFactors=FALSE)
+samples
+
+# load DGE list in R 
+counts <- readDGE(samples$countfile)$counts
+
+grp <- gsub("\\-.[0-9]*","",colnames(counts))
+grp
+
+group <- factor(c(1,1,1,2,2,2,2))
+y <- DGEList(counts=counts,group=group)
+
+#identify low expressed genes (cpm > 1)
+keep <- rowSums(cpm(y)>1) >= 2
+y <- y[keep, ,keep.lib.sizes = FALSE]
+
+y <- calcNormFactors(y)
+design <- model.matrix(~group)
+
+y <- estimateDisp(y,design)
+#To perform likelihood ratio tests:
+fit <- glmFit(y,design)
+lrt <- glmLRT(fit,coef=2)
+topTags(lrt)
+
+```
+
+*Question 1*
+
+```{r, warning = FALSE, message= FALSE}
+# perform multidimensional scaling and display also the different batches
+plotMDS(y, col = c("darkgreen", "red", "red", "darkgreen", "darkgreen", "red", "red"), labels = samples$shortname)
+```
+
+The MDS plot above shows two clusters of samples in the first dimension, indicated by libtype. Based on this in downstream analysis it is essential to account for the libtype as a batch effect.  
+
+
+```{r, warning= FALSE, message=FALSE}
+# repeat edge R analysis considering the libtype as batch effect. 
+setwd("/Users/greves/Desktop/Sarah")
+samples <- read.table("samples.txt", header=TRUE,
+                      row.names=5, stringsAsFactors=FALSE)
+samples
+
+# load DGE list in R 
+counts <- readDGE(samples$countfile)$counts
+
+grp <- gsub("\\-.[0-9]*","",colnames(counts))
+grp
+
+group <- factor(c(1,1,1,2,2,2,2))
+y2 <- DGEList(counts=counts,group=group)
+
+#identify low expressed genes (cpm > 1)
+keep <- rowSums(cpm(y2)>1) >= 2
+y2 <- y2[keep, ,keep.lib.sizes = FALSE]
+
+# add libtype as covariate to the design matrix
+y2 <- calcNormFactors(y2)
+design2 <- model.matrix(~group+samples$libtype)
+
+y2 <- estimateDisp(y2,design2)
+#To perform likelihood ratio tests and consider the batch effect
+fit2 <- glmQLFit(y2,design2)
+qlf <- glmQLFTest(fit2,coef=2)
+
+```
+
+Comparison of the toptags of differential expressed genes with and without accounting for the batch effect (libtype) indicate (slightly) different pValues and logFCs. 
+
+```{r, warning= FALSE, message= FALSE}
+topTags(qlf)
+topTags(lrt)
+```
+
+This difference in differential gene expression is also indicated by the number of identified differential expressed genes in the data sets, which is lower when accounting for the libtype (see tables below)
+
+*Summary of differential gene expression without accountance for the libtype*
+```{r, warning= FALSE, message=FALSE}
+#compare set of differential expressed genes from adjusted and unadjusted model 
+summary(decideTests(lrt))
+```
+
+*Summary of differential gene expression with accountance of the libtype*
+```{r, warning= FALSE, message= FALSE}
+summary(decideTests(qlf))
+```
+
+
+
+```{r, warning= FALSE, message= FALSE}
+# calculate CPMs with and without consideration of the batch effect
+unadj <- cpm(y)
+#adjust for libtype
+adj <- removeBatchEffect(unadj, batch = samples$libtype)
+
+comb <- cbind(unadj, adj)
+
+#identify gene which is the influenced by batch affect
+comb <- cbind(comb, rowMeans(comb[,1:7]-rowMeans(comb [,8:14])))
+comb <- data.frame(comb)
+gene_batch <- comb [order(comb$V15, decreasing = F),]
+
+# plot particular gene to visualize effect of batch correction
+gene <- as.numeric(gene_batch [1,1:14])
+
+barplot(gene, col = c(rep("darkgreen", 7), rep("red", 7)), main = "Effect of batch correction on differential expression", xlab = "Samples", ylab = "CPM", names.arg = c(rep(samples$libtype,2)))
+
+legend(14, 150000,legend=c("unadj", "adj"),
+       fill=c("darkgreen", "red"))
+
+```
+
+The figure above depicts a gene which is solely affected by the libtype. In the unadjusted model,paired end sequencing leads to a continous lower count number of the gene then the single end sequencing. In case the data set is adjusted for the libtype, the difference between single and paired end sequenced samples is removed. 
+
+
+```{r, warning = FALSE, message= FALSE}
+library(pasilla)
+sdir <- file.path(system.file(package="pasilla"), "extdata")
+anno <- file.path(sdir, "Dmel.BDGP5.25.62.DEXSeq.chr.gff")
+
+samplesX = data.frame(cond = rep( c("trt","untrt"), c(3,4) ),
+                      type = c("SE","PE","PE","SE","SE","PE","PE"),
+                      countfile = dir(sdir,pattern="fb.txt"),
+                      stringsAsFactors = TRUE)
+samplesX
+
+# perform differential exon analysis (define data (counts + design))
+dxd <- DEXSeqDataSetFromHTSeq(
+           countfiles=file.path( sdir, samplesX$countfile ),
+           sampleData = samplesX,
+           design = ~ sample + exon + type:exon + cond:exon,
+           flattenedfile=anno)
+
+#normalize according to individual library size
+dxd <- estimateSizeFactors( dxd )
+#estimate data variability
+dxd <- estimateDispersions( dxd )
+#test for differential exon usage (p-value < 0.05 = rejection of Null hypothesis and indication of condition specific differential spicing)
+dxd <- testForDEU( dxd )
+
+#estimate exon FC between treated and non-treated samples
+dxd = estimateExonFoldChanges( dxd, fitExpToVar="cond")
+#generate results table of analysis
+dxr <- DEXSeqResults( dxd)
+
+#identify one of the genes which are differential spliced among the different conditions
+diff_splic <- dxr$padj <0.05
+
+dxr$diff <- diff_splic
+
+#reduce data set to differential spliced exons
+splice_data <-dxr[which(dxr$diff == TRUE),]
+
+#identify top differential spliced gene
+splice_data <- splice_data [order(splice_data$log2fold_untrt_trt, decreasing = F),]
+
+#plot top differential spliced gene according to treatment
+plotDEXSeq(dxr, "FBgn0031117", fitExpToVar = "cond", splicing = TRUE, legend = TRUE, expression = FALSE, displayTranscripts = TRUE)
+```
+
+The plot represents the expression estimates per exon individually per treatment (treated = red, untreated = blue). Shown in red is the exon (E002) that showed significant differential exon usage. Treatment lead to a significant higher expression of FBgn003117:E0002. Followed by this, not all exons are affected by the treatment. 
+
